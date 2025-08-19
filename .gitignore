@@ -1,0 +1,5 @@
+/.vscode
+/.venv
+/build
+/tests/.lit_test_times.txt
+/tests/Output
