@@ -9,6 +9,60 @@ using namespace clang::ast_matchers;
 
 namespace clang::tidy::readability {
 
+namespace {
+enum MemberCategory {
+  MC_TypesAndAliases = 1,       // typedef, using, enum, nested classes, friend types
+  MC_NonStaticDataMembers = 2,  // non-static data members (structs only)
+  MC_StaticConstants = 3,       // static const/constexpr data members
+  MC_FactoryFunctions = 4,      // static functions returning class type
+  MC_ConstructorsAndAssign = 5, // constructors, assignment operators
+  MC_Destructor = 6,            // destructor
+  MC_OtherFunctions = 7,        // all other functions
+  MC_OtherDataMembers = 8       // all other data members
+};
+
+MemberCategory getMemberCategory(const Decl *D, bool isStruct) {
+  if (isa<TypedefNameDecl>(D) || isa<EnumDecl>(D) || isa<CXXRecordDecl>(D) ||
+      isa<FriendDecl>(D))
+    return MC_TypesAndAliases;
+
+  if (const auto *Field = dyn_cast<FieldDecl>(D)) {
+    if (isStruct)
+      return MC_NonStaticDataMembers;
+  }
+
+  if (const auto *Var = dyn_cast<VarDecl>(D)) {
+    if (Var->isStaticDataMember() && Var->getType().isConstQualified())
+      return MC_StaticConstants;
+    return MC_OtherDataMembers;
+  }
+
+  if (const auto *Method = dyn_cast<CXXMethodDecl>(D)) {
+    if (Method->isStatic()) {
+      QualType RetType = Method->getReturnType();
+      if (const auto *RT = RetType->getAsCXXRecordDecl()) {
+        if (RT == Method->getParent())
+          return MC_FactoryFunctions;
+      }
+    }
+
+    if (isa<CXXConstructorDecl>(Method) || Method->isCopyAssignmentOperator() ||
+        Method->isMoveAssignmentOperator())
+      return MC_ConstructorsAndAssign;
+
+    if (isa<CXXDestructorDecl>(Method))
+      return MC_Destructor;
+
+    return MC_OtherFunctions;
+  }
+
+  if (isa<FunctionDecl>(D) || isa<FunctionTemplateDecl>(D))
+    return MC_OtherFunctions;
+
+  return MC_OtherDataMembers;
+}
+} // namespace
+
 MemberOrderCheck::MemberOrderCheck(StringRef Name, ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context) {}
 
@@ -23,12 +77,17 @@ void MemberOrderCheck::check(const MatchFinder::MatchResult &Result) {
 
   AccessSpecifier LastAccess = AS_none;
 
+  bool isStruct = Record->isStruct();
+  MemberCategory LastCategory = MC_TypesAndAliases;
+
   for (const auto *Decl : Record->decls()) {
+    // Skip implicit declarations (compiler-generated constructors, etc.)
+    if (Decl->isImplicit())
+      continue;
+
     AccessSpecifier CurrentAccess = Decl->getAccess();
 
-    // Skip if no access specifier
-    if (CurrentAccess == AS_none)
-      continue;
+    assert(CurrentAccess != AS_none);
 
     // Check order: public -> protected -> private
     if ((LastAccess == AS_protected && CurrentAccess == AS_public) ||
@@ -41,6 +100,27 @@ void MemberOrderCheck::check(const MatchFinder::MatchResult &Result) {
     }
 
     LastAccess = CurrentAccess;
+
+    // Skip access specifier declarations (public:, protected:, private:)
+    if (isa<AccessSpecDecl>(Decl)) {
+      LastCategory = MC_TypesAndAliases;
+      continue;
+    }
+
+    MemberCategory CurrentCategory = getMemberCategory(Decl, isStruct);
+
+    // Check member order within the same access level
+    if (CurrentCategory < LastCategory) {
+      diag(Decl->getLocation(),
+           "members should be ordered: types/aliases, "
+           "data members (structs), static constants, "
+           "factory functions, constructors/assignment, "
+           "destructor, other functions, other data members")
+          << FixItHint::CreateInsertion(Decl->getLocation(),
+                                        "// TODO: reorder members\n");
+    }
+
+    LastCategory = std::max(LastCategory, CurrentCategory);
   }
 }
 
