@@ -87,7 +87,10 @@ void MemberOrderCheck::check(const MatchFinder::MatchResult &Result) {
 
     AccessSpecifier CurrentAccess = Decl->getAccess();
 
-    assert(CurrentAccess != AS_none);
+    // static_assert are AS_none.
+    if (CurrentAccess == AS_none) {
+      continue;
+    }
 
     // Check order: public -> protected -> private
     if ((LastAccess == AS_protected && CurrentAccess == AS_public) ||

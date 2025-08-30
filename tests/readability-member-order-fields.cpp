@@ -2,6 +2,7 @@
 
 // Correct order - should pass
 class Example {
+  static_assert(true);
 public:
   // 1. Types and type aliases
   typedef int MyInt;
